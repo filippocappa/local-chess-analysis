@@ -24,6 +24,8 @@
                 box-shadow: 0 0 10px rgba(99, 102, 241, 0.4) !important;
                 pointer-events: none !important;
                 position: absolute !important;
+                width: 12.5% !important;
+                height: 12.5% !important;
                 z-index: 3 !important;
             }
             .nexus-highlight-to {

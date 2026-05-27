@@ -29,6 +29,7 @@ export default function Dashboard() {
   const [elo, setElo] = useState(0); // 0 = maximum strength
   
   const [observerActive, setObserverActive] = useState(true);
+  const [overlayEnabled, setOverlayEnabled] = useState(true);
   const [domConfig, setDomConfig] = useState({
     boardSelector: "wc-chess-board",
     pieceSelector: ".piece",
@@ -74,10 +75,15 @@ export default function Dashboard() {
           setSkillLevel(data.skill_level !== undefined ? data.skill_level : 20);
           setElo(data.elo || 0);
           setObserverActive(data.observer_active);
+          if (data.overlay_enabled !== undefined) setOverlayEnabled(data.overlay_enabled);
           setDomConfig(data.dom_config);
           if (data.board_status) setBoardStatus(data.board_status);
         } else if (data.type === "best_move") {
           setBestMove(data.move);
+          if (data.active_color) setActiveColor(data.active_color);
+          if (data.user_color) setUserColor(data.user_color);
+        } else if (data.type === "clear_best_move") {
+          setBestMove(null);
           if (data.active_color) setActiveColor(data.active_color);
           if (data.user_color) setUserColor(data.user_color);
           // Clear engine info when we get a final move
@@ -134,6 +140,12 @@ export default function Dashboard() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "toggle_turn" }));
     }
+  };
+
+  const toggleOverlay = () => {
+    const newState = !overlayEnabled;
+    setOverlayEnabled(newState);
+    sendSettingsUpdate({ overlay_enabled: newState });
   };
 
   const handleDomConfigChange = (e: React.ChangeEvent<HTMLInputElement>, key: string) => {
@@ -336,20 +348,41 @@ export default function Dashboard() {
                   <Settings className="w-5 h-5 text-indigo-400" />
                   <h3 className="text-lg font-semibold text-white/90">Engine Parameters</h3>
                 </div>
-                {/* Observer Toggle */}
-                <button
-                  onClick={toggleObserver}
-                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors duration-300 focus:outline-none ${
-                    observerActive ? 'bg-emerald-500' : 'bg-neutral-700'
-                  }`}
-                  title="Toggle Live Observer"
-                >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-300 ${
-                      observerActive ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
+                <div className="flex items-center gap-4">
+                  {/* Overlay Toggle */}
+                  <div className="flex items-center gap-2" title="Toggle Board Overlay">
+                    <span className="text-xs text-neutral-500 font-medium">Overlay</span>
+                    <button
+                      onClick={toggleOverlay}
+                      className={`relative inline-flex h-6 w-10 items-center rounded-full transition-colors duration-300 focus:outline-none ${
+                        overlayEnabled ? 'bg-indigo-500' : 'bg-neutral-700'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-300 ${
+                          overlayEnabled ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                  
+                  {/* Observer Toggle */}
+                  <div className="flex items-center gap-2" title="Toggle Live Observer">
+                    <span className="text-xs text-neutral-500 font-medium">Observer</span>
+                    <button
+                      onClick={toggleObserver}
+                      className={`relative inline-flex h-6 w-10 items-center rounded-full transition-colors duration-300 focus:outline-none ${
+                        observerActive ? 'bg-emerald-500' : 'bg-neutral-700'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform duration-300 ${
+                          observerActive ? 'translate-x-5' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Depth Slider */}

@@ -160,6 +160,7 @@ class ConnectionManager:
         
         # App State
         self.observer_active = True
+        self.overlay_enabled = True
         self.board_status = "disconnected"
         self.dom_config = {
             "boardSelector": "wc-chess-board",
@@ -198,6 +199,7 @@ class ConnectionManager:
             "skill_level": self.skill_level,
             "elo": self.elo,
             "observer_active": self.observer_active,
+            "overlay_enabled": self.overlay_enabled,
             "dom_config": self.dom_config,
             "board_status": self.board_status
         })
@@ -228,6 +230,9 @@ class ConnectionManager:
                     engine_settings_changed = True
                 if "observer_active" in data:
                     self.observer_active = data["observer_active"]
+                    settings_changed = True
+                if "overlay_enabled" in data:
+                    self.overlay_enabled = data["overlay_enabled"]
                     settings_changed = True
                 if "dom_config" in data:
                     self.dom_config = data["dom_config"]
@@ -270,6 +275,13 @@ class ConnectionManager:
                     try:
                         board = chess.Board(fen)
                         active_color = "w" if board.turn else "b"
+                        
+                        # Clear old best move on all dashboards instantly
+                        await self.broadcast(json.dumps({
+                            "type": "clear_best_move",
+                            "active_color": active_color,
+                            "user_color": user_color
+                        }))
                         
                         # Trigger async search
                         await self.engine.search(fen, self.depth, self.movetime, active_color, user_color)
