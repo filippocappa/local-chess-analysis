@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, Activity, Monitor, Terminal, Radio, User } from "lucide-react";
+import { Settings, Activity, Monitor, Terminal, Radio, User, Cpu } from "lucide-react";
 
 type LogEntry = {
   timestamp: string;
@@ -20,9 +20,14 @@ export default function Dashboard() {
   const [userColor, setUserColor] = useState<string>("w");
   const [boardStatus, setBoardStatus] = useState<string>("disconnected");
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [engineInfo, setEngineInfo] = useState<string[]>([]);
   
   // Settings State
   const [depth, setDepth] = useState(15);
+  const [movetime, setMovetime] = useState(0); // 0 = disabled (use depth)
+  const [skillLevel, setSkillLevel] = useState(20);
+  const [elo, setElo] = useState(0); // 0 = maximum strength
+  
   const [observerActive, setObserverActive] = useState(true);
   const [domConfig, setDomConfig] = useState({
     boardSelector: "wc-chess-board",
@@ -32,13 +37,15 @@ export default function Dashboard() {
   });
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const infoEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Auto-scroll logs
-    if (logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    if (logsEndRef.current) logsEndRef.current.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
+
+  useEffect(() => {
+    if (infoEndRef.current) infoEndRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [engineInfo]);
 
   useEffect(() => {
     const connect = () => {
@@ -51,18 +58,26 @@ export default function Dashboard() {
         
         if (data.type === "state") {
           setDepth(data.depth);
+          setMovetime(data.movetime || 0);
+          setSkillLevel(data.skill_level !== undefined ? data.skill_level : 20);
+          setElo(data.elo || 0);
           setObserverActive(data.observer_active);
           setDomConfig(data.dom_config);
+          if (data.board_status) setBoardStatus(data.board_status);
         } else if (data.type === "best_move") {
           setBestMove(data.move);
           if (data.active_color) setActiveColor(data.active_color);
           if (data.user_color) setUserColor(data.user_color);
+          // Clear engine info when we get a final move
+          // setEngineInfo([]); 
+        } else if (data.type === "engine_info") {
+          setEngineInfo(prev => [...prev, data.info].slice(-20)); // Keep last 20 depth lines
         } else if (data.type === "log") {
           setLogs(prev => [...prev, {
             timestamp: new Date().toLocaleTimeString(),
             level: data.level,
             message: data.message
-          }].slice(-50)); // Keep last 50 logs
+          }].slice(-50));
         } else if (data.type === "board_status") {
           setBoardStatus(data.status);
         }
@@ -91,10 +106,10 @@ export default function Dashboard() {
     }
   };
 
-  const handleDepthChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newDepth = parseInt(e.target.value);
-    setDepth(newDepth);
-    sendSettingsUpdate({ depth: newDepth });
+  const handleSliderChange = (setter: any, key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = parseInt(e.target.value);
+    setter(val);
+    sendSettingsUpdate({ [key]: val });
   };
 
   const toggleObserver = () => {
@@ -128,12 +143,37 @@ export default function Dashboard() {
     ? 'from-white via-neutral-200 to-neutral-400' 
     : 'from-neutral-400 via-neutral-600 to-neutral-800 text-transparent bg-clip-text';
 
+  // Parse engine info to make it readable
+  const formatEngineInfo = (info: string) => {
+    const depthMatch = info.match(/depth (\d+)/);
+    const scoreMatch = info.match(/score (cp|mate) (-?\d+)/);
+    const pvMatch = info.match(/pv (.+)/);
+    
+    let formatted = "";
+    if (depthMatch) formatted += `Depth ${depthMatch[1]} `;
+    if (scoreMatch) {
+      const type = scoreMatch[1];
+      const val = parseInt(scoreMatch[2]);
+      if (type === 'mate') {
+        formatted += `[Mate in ${val}] `;
+      } else {
+        formatted += `[${(val / 100).toFixed(2)}] `;
+      }
+    }
+    if (pvMatch) {
+      // Show first 4 moves of PV
+      const moves = pvMatch[1].split(' ').slice(0, 4).join(' ');
+      formatted += `Best line: ${moves}...`;
+    }
+    return formatted || info;
+  };
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-indigo-500/30">
-      <div className="max-w-6xl mx-auto p-6 lg:p-12">
+      <div className="max-w-7xl mx-auto p-4 lg:p-8">
         
         {/* Header */}
-        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-12">
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div className="flex items-center gap-3">
             <div className={`p-2 rounded-xl bg-gradient-to-br ${isConnected ? 'from-indigo-500/20 to-indigo-500/10 text-indigo-400 border-indigo-500/20' : 'from-rose-500/20 to-rose-500/10 text-rose-400 border-rose-500/20'} border`}>
               <Activity className="w-6 h-6" />
@@ -149,7 +189,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Board Status Badge */}
           <div className={`flex items-center gap-2 px-4 py-2 rounded-full border border-white/5 bg-white/[0.02] ${statusConfig.color}`}>
             <Radio className="w-4 h-4" />
             <span className="text-sm font-medium">{statusConfig.text}</span>
@@ -157,16 +196,16 @@ export default function Dashboard() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
-          {/* Main Content Area */}
-          <div className="lg:col-span-7 space-y-8 flex flex-col">
+          {/* Main Visual Area */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
             
-            {/* Optimal Sequence Display */}
-            <div className="relative group rounded-3xl bg-white/[0.02] border border-white/10 p-8 overflow-hidden backdrop-blur-xl flex-grow">
+            {/* Optimal Sequence */}
+            <div className="relative group rounded-3xl bg-white/[0.02] border border-white/10 p-8 overflow-hidden backdrop-blur-xl shrink-0">
               <div className={`absolute inset-0 bg-gradient-to-br ${activeColor === 'w' ? 'from-white/5 via-white/2' : 'from-black/10 via-black/5'} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
               
-              <div className="flex justify-between items-start mb-8">
+              <div className="flex justify-between items-start mb-6">
                 <h2 className="text-sm font-medium text-neutral-400 tracking-widest uppercase flex items-center gap-2">
                   Optimal Sequence
                 </h2>
@@ -182,7 +221,7 @@ export default function Dashboard() {
                 )}
               </div>
               
-              <div className="flex flex-col items-center justify-center min-h-[250px] relative z-10">
+              <div className="flex flex-col items-center justify-center min-h-[200px] relative z-10">
                 <AnimatePresence mode="wait">
                   {bestMove ? (
                     <motion.div
@@ -199,7 +238,7 @@ export default function Dashboard() {
                       <div className={`text-8xl md:text-9xl font-black tracking-tighter bg-clip-text ${moveColorTheme} drop-shadow-2xl`}>
                         {bestMove}
                       </div>
-                      <div className="mt-6 text-neutral-500 font-medium">
+                      <div className="mt-4 text-neutral-500 font-medium">
                         {activeColor === 'w' ? 'White' : 'Black'} to move
                       </div>
                     </motion.div>
@@ -217,13 +256,33 @@ export default function Dashboard() {
               </div>
             </div>
 
+            {/* Live Stockfish Analysis */}
+            <div className="rounded-3xl bg-[#0a0a0a] border border-white/10 p-6 flex flex-col h-[200px]">
+              <div className="flex items-center gap-2 mb-4 text-neutral-400 border-b border-white/5 pb-4">
+                <Cpu className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-semibold tracking-wider uppercase">Live Engine Thinking</h3>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5 text-indigo-200/80">
+                {engineInfo.length === 0 ? (
+                  <div className="text-neutral-600 italic">Engine idle...</div>
+                ) : (
+                  engineInfo.map((info, i) => (
+                    <div key={i} className="break-words">
+                      {formatEngineInfo(info)}
+                    </div>
+                  ))
+                )}
+                <div ref={infoEndRef} />
+              </div>
+            </div>
+
             {/* Remote Console */}
-            <div className="rounded-3xl bg-[#0a0a0a] border border-white/10 p-6 flex flex-col h-[300px]">
+            <div className="rounded-3xl bg-[#0a0a0a] border border-white/10 p-6 flex flex-col h-[200px]">
               <div className="flex items-center gap-2 mb-4 text-neutral-400 border-b border-white/5 pb-4">
                 <Terminal className="w-5 h-5" />
-                <h3 className="text-sm font-semibold tracking-wider uppercase">Userscript Console</h3>
+                <h3 className="text-sm font-semibold tracking-wider uppercase">Userscript Logs</h3>
               </div>
-              <div className="flex-1 overflow-y-auto space-y-2 font-mono text-xs p-2 rounded-xl bg-black/50 border border-white/5">
+              <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5">
                 {logs.length === 0 ? (
                   <div className="text-neutral-600 italic">No logs yet. Waiting for userscript...</div>
                 ) : (
@@ -243,45 +302,94 @@ export default function Dashboard() {
           {/* Settings Panel */}
           <div className="lg:col-span-5 space-y-6">
             <div className="rounded-3xl bg-white/[0.02] border border-white/10 p-6 backdrop-blur-xl">
-              <div className="flex items-center gap-3 mb-6">
-                <Settings className="w-5 h-5 text-indigo-400" />
-                <h3 className="text-lg font-semibold text-white/90">Engine Parameters</h3>
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-3">
+                  <Settings className="w-5 h-5 text-indigo-400" />
+                  <h3 className="text-lg font-semibold text-white/90">Engine Parameters</h3>
+                </div>
+                {/* Observer Toggle */}
+                <button
+                  onClick={toggleObserver}
+                  className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors duration-300 focus:outline-none ${
+                    observerActive ? 'bg-emerald-500' : 'bg-neutral-700'
+                  }`}
+                  title="Toggle Live Observer"
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform duration-300 ${
+                      observerActive ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
               </div>
 
               {/* Depth Slider */}
-              <div className="space-y-4 mb-8">
+              <div className="space-y-4 mb-6">
                 <div className="flex justify-between items-end">
                   <label className="text-sm font-medium text-neutral-400">Calculation Depth</label>
-                  <span className="text-2xl font-bold text-indigo-400">{depth}</span>
+                  <span className="text-lg font-bold text-white">{depth}</span>
                 </div>
                 <input
                   type="range"
                   min="1"
-                  max="20"
+                  max="30"
                   value={depth}
-                  onChange={handleDepthChange}
+                  onChange={handleSliderChange(setDepth, "depth")}
                   className="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                 />
               </div>
 
-              {/* Observer Toggle */}
-              <div className="flex items-center justify-between p-4 rounded-2xl bg-white/[0.03] border border-white/5">
-                <div>
-                  <p className="font-medium text-white/90">Userscript Observer</p>
-                  <p className="text-sm text-neutral-500">Live board monitoring</p>
+              {/* MoveTime Slider */}
+              <div className="space-y-4 mb-6">
+                <div className="flex justify-between items-end">
+                  <label className="text-sm font-medium text-neutral-400">Move Time Limit (ms)</label>
+                  <span className="text-lg font-bold text-white">{movetime === 0 ? 'Disabled' : movetime}</span>
                 </div>
-                <button
-                  onClick={toggleObserver}
-                  className={`relative inline-flex h-8 w-14 items-center rounded-full transition-colors duration-300 focus:outline-none ${
-                    observerActive ? 'bg-indigo-500' : 'bg-neutral-700'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-6 w-6 transform rounded-full bg-white transition-transform duration-300 ${
-                      observerActive ? 'translate-x-7' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="10000"
+                  step="100"
+                  value={movetime}
+                  onChange={handleSliderChange(setMovetime, "movetime")}
+                  className="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <p className="text-xs text-neutral-600 mt-1">If > 0, overrides calculation depth.</p>
+              </div>
+
+              {/* ELO Slider */}
+              <div className="space-y-4 mb-6">
+                <div className="flex justify-between items-end">
+                  <label className="text-sm font-medium text-neutral-400">Target ELO</label>
+                  <span className="text-lg font-bold text-white">{elo === 0 ? 'Maximum' : elo}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="3200"
+                  step="100"
+                  value={elo}
+                  onChange={handleSliderChange(setElo, "elo")}
+                  className="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <p className="text-xs text-neutral-600 mt-1">Set to 0 for unlimited strength.</p>
+              </div>
+
+              {/* Skill Level Slider */}
+              <div className="space-y-4">
+                <div className="flex justify-between items-end">
+                  <label className="text-sm font-medium text-neutral-400">Skill Level</label>
+                  <span className="text-lg font-bold text-white">{skillLevel}/20</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="20"
+                  value={skillLevel}
+                  onChange={handleSliderChange(setSkillLevel, "skill_level")}
+                  className="w-full h-2 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <p className="text-xs text-neutral-600 mt-1">Lower values make more tactical errors.</p>
               </div>
             </div>
 

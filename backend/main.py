@@ -8,16 +8,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import chess
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants
 STOCKFISH_PATH = "/opt/homebrew/bin/stockfish"
 
 app = FastAPI()
-
-# Allow CORS for local development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,73 +22,143 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class EngineManager:
-    def __init__(self, stockfish_path: str):
+class AsyncEngineManager:
+    def __init__(self, stockfish_path: str, connection_manager):
         self.stockfish_path = stockfish_path
-        self.process: Optional[subprocess.Popen] = None
+        self.process: Optional[asyncio.subprocess.Process] = None
+        self.connection_manager = connection_manager
+        self.search_task: Optional[asyncio.Task] = None
+        self.is_searching = False
 
-    def start(self):
-        """Starts the Stockfish engine process."""
+    async def start(self):
         if not self.process:
             try:
-                self.process = subprocess.Popen(
-                    [self.stockfish_path],
-                    universal_newlines=True,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                self.process = await asyncio.create_subprocess_exec(
+                    self.stockfish_path,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
-                self._send_command("uci")
+                await self._send_command("uci")
                 # Wait for uciok
                 while True:
-                    line = self.process.stdout.readline().strip()
-                    if line == "uciok":
+                    line = await self.process.stdout.readline()
+                    if not line: break
+                    if line.decode().strip() == "uciok":
                         break
-                self._send_command("isready")
+                await self._send_command("isready")
                 while True:
-                    line = self.process.stdout.readline().strip()
-                    if line == "readyok":
+                    line = await self.process.stdout.readline()
+                    if not line: break
+                    if line.decode().strip() == "readyok":
                         break
-                logger.info("Stockfish engine started successfully.")
+                logger.info("Async Stockfish engine started successfully.")
+                
+                # Apply initial settings
+                await self.apply_settings(
+                    self.connection_manager.skill_level,
+                    self.connection_manager.elo
+                )
             except Exception as e:
                 logger.error(f"Failed to start Stockfish: {e}")
 
-    def _send_command(self, command: str):
-        """Sends a command to the engine."""
+    async def apply_settings(self, skill_level: int, elo: int):
+        # Stop search if running to apply safely
+        await self._send_command("stop")
+        
+        # Skill level is 0-20
+        await self._send_command(f"setoption name Skill Level value {skill_level}")
+        
+        # Elo is tricky. Stockfish uses UCI_LimitStrength and UCI_Elo
+        # But only if UCI_LimitStrength is true.
+        # If elo > 0, we limit it. If elo == 0, we don't limit.
+        if elo > 0:
+            await self._send_command("setoption name UCI_LimitStrength value true")
+            await self._send_command(f"setoption name UCI_Elo value {elo}")
+        else:
+            await self._send_command("setoption name UCI_LimitStrength value false")
+
+    async def _send_command(self, command: str):
         if self.process and self.process.stdin:
-            self.process.stdin.write(command + "\n")
-            self.process.stdin.flush()
+            self.process.stdin.write((command + "\n").encode())
+            await self.process.stdin.drain()
 
-    def get_best_move(self, fen: str, depth: int) -> Optional[str]:
-        """Asks Stockfish for the best move for a given FEN and depth."""
+    async def _read_output(self, fen: str, active_color: str, user_color: str):
+        if not self.process or not self.process.stdout: return
+        
+        while self.is_searching:
+            try:
+                line_bytes = await asyncio.wait_for(self.process.stdout.readline(), timeout=0.1)
+                if not line_bytes: break
+                line = line_bytes.decode().strip()
+                
+                if line.startswith("info depth"):
+                    # Stream live thinking
+                    await self.connection_manager.broadcast(json.dumps({
+                        "type": "engine_info",
+                        "info": line
+                    }))
+                elif line.startswith("bestmove"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        best_move = parts[1]
+                        await self.connection_manager.broadcast(json.dumps({
+                            "type": "best_move",
+                            "move": best_move,
+                            "fen": fen,
+                            "active_color": active_color,
+                            "user_color": user_color
+                        }))
+                    self.is_searching = False
+                    break
+            except asyncio.TimeoutError:
+                continue
+
+    async def search(self, fen: str, depth: int, movetime: int, active_color: str, user_color: str):
         if not self.process:
-            self.start()
+            await self.start()
         
-        self._send_command(f"position fen {fen}")
-        self._send_command(f"go depth {depth}")
-        
-        best_move = None
-        while True:
-            line = self.process.stdout.readline().strip()
-            if line.startswith("bestmove"):
-                parts = line.split()
-                if len(parts) >= 2:
-                    best_move = parts[1]
-                break
-        return best_move
+        # Stop any ongoing search
+        if self.is_searching:
+            await self._send_command("stop")
+            self.is_searching = False
+            # Wait a tiny bit for it to stop
+            await asyncio.sleep(0.1)
 
-    def stop(self):
-        """Stops the engine."""
+        await self._send_command(f"position fen {fen}")
+        
+        if movetime > 0:
+            await self._send_command(f"go movetime {movetime}")
+        else:
+            await self._send_command(f"go depth {depth}")
+            
+        self.is_searching = True
+        
+        # Start background reader task for this search
+        if self.search_task:
+            self.search_task.cancel()
+        self.search_task = asyncio.create_task(self._read_output(fen, active_color, user_color))
+
+    async def stop(self):
         if self.process:
-            self._send_command("quit")
-            self.process.terminate()
+            await self._send_command("quit")
+            try:
+                self.process.terminate()
+            except Exception:
+                pass
             self.process = None
 
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-        # State
+        
+        # Engine State
         self.depth = 15
+        self.movetime = 0 # 0 means use depth
+        self.skill_level = 20
+        self.elo = 0 # 0 means max strength
+        
+        # App State
         self.observer_active = True
         self.board_status = "disconnected"
         self.dom_config = {
@@ -101,14 +167,16 @@ class ConnectionManager:
             "colorPieceRegex": "\\b([wb])([pnbrqk])\\b",
             "squareRegex": "square-(\\d)(\\d)"
         }
-        self.engine = EngineManager(STOCKFISH_PATH)
-        self.engine.start()
+        
+        self.engine = AsyncEngineManager(STOCKFISH_PATH, self)
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
-        # Send initial state to the client
         await self.send_state(websocket)
+        # Ensure engine is started
+        if not self.engine.process:
+            await self.engine.start()
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -125,8 +193,12 @@ class ConnectionManager:
         state_msg = json.dumps({
             "type": "state",
             "depth": self.depth,
+            "movetime": self.movetime,
+            "skill_level": self.skill_level,
+            "elo": self.elo,
             "observer_active": self.observer_active,
-            "dom_config": self.dom_config
+            "dom_config": self.dom_config,
+            "board_status": self.board_status
         })
         await websocket.send_text(state_msg)
 
@@ -136,20 +208,46 @@ class ConnectionManager:
             msg_type = data.get("type")
 
             if msg_type == "update_settings":
+                settings_changed = False
+                engine_settings_changed = False
+                
                 if "depth" in data:
                     self.depth = data["depth"]
+                    settings_changed = True
+                if "movetime" in data:
+                    self.movetime = data["movetime"]
+                    settings_changed = True
+                if "skill_level" in data:
+                    self.skill_level = data["skill_level"]
+                    settings_changed = True
+                    engine_settings_changed = True
+                if "elo" in data:
+                    self.elo = data["elo"]
+                    settings_changed = True
+                    engine_settings_changed = True
                 if "observer_active" in data:
                     self.observer_active = data["observer_active"]
+                    settings_changed = True
                 if "dom_config" in data:
                     self.dom_config = data["dom_config"]
-                # Broadcast updated state to all connected clients
-                state_msg = json.dumps({
-                    "type": "state",
-                    "depth": self.depth,
-                    "observer_active": self.observer_active,
-                    "dom_config": self.dom_config
-                })
-                await self.broadcast(state_msg)
+                    settings_changed = True
+                    
+                if engine_settings_changed:
+                    await self.engine.apply_settings(self.skill_level, self.elo)
+
+                if settings_changed:
+                    # Broadcast updated state
+                    state_msg = json.dumps({
+                        "type": "state",
+                        "depth": self.depth,
+                        "movetime": self.movetime,
+                        "skill_level": self.skill_level,
+                        "elo": self.elo,
+                        "observer_active": self.observer_active,
+                        "dom_config": self.dom_config,
+                        "board_status": self.board_status
+                    })
+                    await self.broadcast(state_msg)
 
             elif msg_type == "log":
                 await self.broadcast(message)
@@ -165,23 +263,13 @@ class ConnectionManager:
                 fen = data.get("fen")
                 user_color = data.get("user_color", "w")
                 if fen:
-                    # Validate FEN
                     try:
                         board = chess.Board(fen)
-                        # Determine active turn
                         active_color = "w" if board.turn else "b"
                         
-                        # Valid FEN, get best move
-                        best_move = self.engine.get_best_move(fen, self.depth)
-                        if best_move:
-                            move_msg = json.dumps({
-                                "type": "best_move",
-                                "move": best_move,
-                                "fen": fen,
-                                "active_color": active_color,
-                                "user_color": user_color
-                            })
-                            await self.broadcast(move_msg)
+                        # Trigger async search
+                        await self.engine.search(fen, self.depth, self.movetime, active_color, user_color)
+                        
                     except ValueError:
                         logger.warning(f"Invalid FEN received: {fen}")
 
@@ -204,5 +292,5 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 @app.on_event("shutdown")
-def shutdown_event():
-    manager.engine.stop()
+async def shutdown_event():
+    await manager.engine.stop()

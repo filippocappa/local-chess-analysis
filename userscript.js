@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Local Chess Analysis Tool (Nexus Engine)
 // @namespace    http://tampermonkey.net/
-// @version      0.2
-// @description  Passively observes the chess board, detects turn/color, and pipes data to the local WebSocket
+// @version      0.3
+// @description  Passively observes the chess board, tracks turn via memory, and pipes data to the local WebSocket
 // @match        *://*.chess.com/*
 // @match        *://lichess.org/*
 // @grant        none
@@ -21,9 +21,7 @@
             try {
                 const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
                 ws.send(JSON.stringify({ type: "log", level: level, message: message }));
-            } catch (e) {
-                // Ignore circular json errors
-            }
+            } catch (e) { }
         }
         if (level === 'error') {
             originalError.apply(console, args);
@@ -32,23 +30,16 @@
         }
     }
 
+    // Intercept ALL logs to show in dashboard for debugging
     console.log = (...args) => {
-        if (args[0] && typeof args[0] === 'string' && args[0].startsWith("[ChessTool]")) {
-            remoteLog('info', ...args);
-        } else {
-            originalLog.apply(console, args);
-        }
+        remoteLog('info', ...args);
     };
 
     console.error = (...args) => {
-        if (args[0] && typeof args[0] === 'string' && args[0].startsWith("[ChessTool]")) {
-            remoteLog('error', ...args);
-        } else {
-            originalError.apply(console, args);
-        }
+        remoteLog('error', ...args);
     };
 
-    console.log("[ChessTool] Script injected. V2 initialized.");
+    console.log("[ChessTool] Script injected. V3 initialized.");
 
     // --- State ---
     let domConfig = {
@@ -61,7 +52,9 @@
     let observer = null;
     let observerActive = true;
     let lastFen = "";
-    let userColor = 'w'; // Default
+    let userColor = 'w';
+    let activeTurn = 'w'; // Always assume White starts
+    let previousBoard = null;
 
     // --- Core Logic ---
     function setBoardStatus(status) {
@@ -76,6 +69,7 @@
 
         ws.onopen = () => {
             console.log("[ChessTool] WebSocket connected successfully!");
+            setBoardStatus("searching"); // Initialize as searching until we find it
             setupObserver();
         };
 
@@ -105,7 +99,6 @@
 
         ws.onclose = () => {
             console.log("[ChessTool] WebSocket disconnected. Reconnecting in 3s...");
-            setBoardStatus("disconnected");
             setTimeout(connect, 3000);
         };
         
@@ -147,6 +140,27 @@
         });
     }
 
+    // Compare boards to infer whose turn it is
+    function detectTurn(oldBoard, newBoard) {
+        if (!oldBoard) return 'w'; // Assume white if first time
+
+        // Find which piece color changed position
+        for (let r = 0; r < 8; r++) {
+            for (let f = 0; f < 8; f++) {
+                const oldPiece = oldBoard[r][f];
+                const newPiece = newBoard[r][f];
+
+                if (oldPiece && !newPiece) {
+                    // A piece moved FROM here. The color of this piece is the one who just played.
+                    // If a white piece moved, it is now Black's turn.
+                    const isWhite = oldPiece === oldPiece.toUpperCase();
+                    return isWhite ? 'b' : 'w';
+                }
+            }
+        }
+        return activeTurn; // Fallback
+    }
+
     function processBoard() {
         if (!observerActive || !ws || ws.readyState !== WebSocket.OPEN) return;
 
@@ -155,6 +169,9 @@
             setBoardStatus("searching");
             return;
         }
+        
+        // Make sure we inform dashboard we are connected
+        setBoardStatus("connected");
 
         const pieces = boardElement.querySelectorAll(domConfig.pieceSelector);
         if (pieces.length === 0) return;
@@ -164,12 +181,6 @@
         const cpRegex = new RegExp(domConfig.colorPieceRegex);
         const sqRegex = new RegExp(domConfig.squareRegex);
 
-        let whitePiecesCount = 0;
-        let blackPiecesCount = 0;
-
-        // Determine orientation by checking if board has a flipped class (chess.com specific fallback)
-        // A better way is to see if piece coordinates indicate orientation, but let's pass a generic FEN
-        // and let the backend/dashboard handle turn logic if needed.
         if (boardElement.classList.contains("flipped")) {
             userColor = 'b';
         } else {
@@ -185,9 +196,6 @@
                 const color = cpMatch[1]; 
                 const type = cpMatch[2]; 
                 
-                if (color === 'w') whitePiecesCount++;
-                if (color === 'b') blackPiecesCount++;
-
                 const file = parseInt(sqMatch[1], 10);
                 const rank = parseInt(sqMatch[2], 10);
                 
@@ -199,6 +207,10 @@
                 }
             }
         });
+
+        // Detect turn before updating previousBoard
+        activeTurn = detectTurn(previousBoard, board);
+        previousBoard = board;
 
         let fen = "";
         for (let r = 0; r < 8; r++) {
@@ -220,14 +232,13 @@
             if (r < 7) fen += "/";
         }
 
-        // Extremely basic turn inference based on pieces missing (not perfect, but a start).
-        // Standard FEN requires turn. Since we don't have move history in this pure DOM reader,
-        // we append the default string and let the backend figure out the rest.
-        fen += " w KQkq - 0 1";
+        // Apply our detected turn!
+        fen += ` ${activeTurn} KQkq - 0 1`;
 
+        // Don't send FEN if it's an empty board 8/8/8/8/8/8/8/8
         if (fen !== lastFen && fen.split(" ")[0] !== "8/8/8/8/8/8/8/8") {
             lastFen = fen;
-            console.log(`[ChessTool] Detected new board state (${whitePiecesCount}W vs ${blackPiecesCount}B).`);
+            console.log(`[ChessTool] Detected new board state. Extracted FEN: ${fen}`);
             ws.send(JSON.stringify({ 
                 type: "fen", 
                 fen: fen,
