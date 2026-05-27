@@ -22,6 +22,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [engineInfo, setEngineInfo] = useState<string[]>([]);
   const [movesHistory, setMovesHistory] = useState<string[]>([]);
+  const [backendLogs, setBackendLogs] = useState<LogEntry[]>([]);
   
   // Settings State
   const [depth, setDepth] = useState(15);
@@ -40,6 +41,7 @@ export default function Dashboard() {
 
   const logsContainerRef = useRef<HTMLDivElement>(null);
   const infoContainerRef = useRef<HTMLDivElement>(null);
+  const backendLogsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const container = logsContainerRef.current;
@@ -60,6 +62,16 @@ export default function Dashboard() {
       }
     }
   }, [engineInfo]);
+
+  useEffect(() => {
+    const container = backendLogsContainerRef.current;
+    if (container) {
+      const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+      if (isAtBottom || backendLogs.length <= 1) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+  }, [backendLogs]);
 
   useEffect(() => {
     const connect = () => {
@@ -102,6 +114,12 @@ export default function Dashboard() {
           }].slice(-50));
         } else if (data.type === "board_status") {
           setBoardStatus(data.status);
+        } else if (data.type === "backend_log") {
+          setBackendLogs(prev => [...prev, {
+            timestamp: new Date().toLocaleTimeString(),
+            level: data.level,
+            message: data.message
+          }].slice(-50));
         }
       };
 
@@ -308,7 +326,7 @@ export default function Dashboard() {
                 </h2>
                 
                 <div className="flex items-center gap-2">
-                  {boardStatus === "connected" && (
+                  {isConnected && (
                     <button
                       onClick={toggleTurn}
                       className="flex items-center gap-1.5 text-xs font-semibold bg-indigo-500/10 hover:bg-indigo-500/25 border border-indigo-500/20 text-indigo-300 px-3 py-1.5 rounded-lg transition-colors focus:outline-none cursor-pointer"
@@ -424,6 +442,26 @@ export default function Dashboard() {
                 ) : (
                   logs.map((log, i) => (
                     <div key={i} className={`break-words ${log.level === 'error' ? 'text-rose-400' : 'text-emerald-300/80'}`}>
+                      <span className="text-neutral-600 mr-2">[{log.timestamp}]</span>
+                      {log.message}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Backend System Logs */}
+            <div className="rounded-3xl bg-[#0a0a0a] border border-white/10 p-6 flex flex-col h-[200px]">
+              <div className="flex items-center gap-2 mb-4 text-neutral-400 border-b border-white/5 pb-4">
+                <Terminal className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-sm font-semibold tracking-wider uppercase">Backend System Logs</h3>
+              </div>
+              <div ref={backendLogsContainerRef} className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5">
+                {backendLogs.length === 0 ? (
+                  <div className="text-neutral-600 italic">No backend logs yet...</div>
+                ) : (
+                  backendLogs.map((log, i) => (
+                    <div key={i} className={`break-words ${log.level === 'error' ? 'text-rose-400' : log.level === 'warning' ? 'text-amber-400' : 'text-indigo-300/80'}`}>
                       <span className="text-neutral-600 mr-2">[{log.timestamp}]</span>
                       {log.message}
                     </div>

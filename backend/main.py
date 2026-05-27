@@ -11,6 +11,20 @@ import chess
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+class WSLogHandler(logging.Handler):
+    def __init__(self, manager):
+        super().__init__()
+        self.manager = manager
+
+    def emit(self, record):
+        try:
+            log_entry = self.format(record)
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self.manager.send_backend_log(log_entry, record.levelname.lower()))
+        except Exception:
+            pass
+
 STOCKFISH_PATH = "/opt/homebrew/bin/stockfish"
 
 app = FastAPI()
@@ -174,6 +188,11 @@ class ConnectionManager:
         self.user_color = "w"
         
         self.engine = AsyncEngineManager(STOCKFISH_PATH, self)
+        
+        # Add logging handler
+        handler = WSLogHandler(self)
+        handler.setFormatter(logging.Formatter('%(message)s'))
+        logger.addHandler(handler)
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -194,6 +213,18 @@ class ConnectionManager:
             except Exception as e:
                 logger.warning(f"Error broadcasting message to client: {e}")
                 self.disconnect(connection)
+
+    async def send_backend_log(self, message: str, level: str):
+        payload = json.dumps({
+            "type": "backend_log",
+            "level": level,
+            "message": message
+        })
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(payload)
+            except Exception:
+                pass
 
     async def send_state(self, websocket: WebSocket):
         state_msg = json.dumps({
