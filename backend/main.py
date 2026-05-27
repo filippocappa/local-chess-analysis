@@ -94,8 +94,9 @@ class ConnectionManager:
         # State
         self.depth = 15
         self.observer_active = True
+        self.board_status = "disconnected"
         self.dom_config = {
-            "boardSelector": "chess-board",
+            "boardSelector": "wc-chess-board",
             "pieceSelector": ".piece",
             "colorPieceRegex": "\\b([wb])([pnbrqk])\\b",
             "squareRegex": "square-(\\d)(\\d)"
@@ -150,22 +151,35 @@ class ConnectionManager:
                 })
                 await self.broadcast(state_msg)
 
+            elif msg_type == "log":
+                await self.broadcast(message)
+                
+            elif msg_type == "board_status":
+                self.board_status = data.get("status", "disconnected")
+                await self.broadcast(message)
+
             elif msg_type == "fen":
                 if not self.observer_active:
                     return
                 
                 fen = data.get("fen")
+                user_color = data.get("user_color", "w")
                 if fen:
                     # Validate FEN
                     try:
                         board = chess.Board(fen)
+                        # Determine active turn
+                        active_color = "w" if board.turn else "b"
+                        
                         # Valid FEN, get best move
                         best_move = self.engine.get_best_move(fen, self.depth)
                         if best_move:
                             move_msg = json.dumps({
                                 "type": "best_move",
                                 "move": best_move,
-                                "fen": fen
+                                "fen": fen,
+                                "active_color": active_color,
+                                "user_color": user_color
                             })
                             await self.broadcast(move_msg)
                     except ValueError:

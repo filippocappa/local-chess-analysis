@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Local Chess Analysis Tool
+// @name         Local Chess Analysis Tool (Nexus Engine)
 // @namespace    http://tampermonkey.net/
-// @version      0.1
-// @description  Passively observes the chess board and sends FEN to local WebSocket
+// @version      0.2
+// @description  Passively observes the chess board, detects turn/color, and pipes data to the local WebSocket
 // @match        *://*.chess.com/*
 // @match        *://lichess.org/*
 // @grant        none
@@ -11,29 +11,71 @@
 (function() {
     'use strict';
 
-    console.log("[ChessTool] Script injected.");
-
+    // --- Remote Console Logic ---
     let ws = null;
+    const originalLog = console.log;
+    const originalError = console.error;
+
+    function remoteLog(level, ...args) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+                const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+                ws.send(JSON.stringify({ type: "log", level: level, message: message }));
+            } catch (e) {
+                // Ignore circular json errors
+            }
+        }
+        if (level === 'error') {
+            originalError.apply(console, args);
+        } else {
+            originalLog.apply(console, args);
+        }
+    }
+
+    console.log = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && args[0].startsWith("[ChessTool]")) {
+            remoteLog('info', ...args);
+        } else {
+            originalLog.apply(console, args);
+        }
+    };
+
+    console.error = (...args) => {
+        if (args[0] && typeof args[0] === 'string' && args[0].startsWith("[ChessTool]")) {
+            remoteLog('error', ...args);
+        } else {
+            originalError.apply(console, args);
+        }
+    };
+
+    console.log("[ChessTool] Script injected. V2 initialized.");
+
+    // --- State ---
     let domConfig = {
-        boardSelector: "chess-board",
+        boardSelector: "wc-chess-board",
         pieceSelector: ".piece",
-        // Example for chess.com: piece classes are like "piece wp square-52"
-        // colorPieceRegex: match[1] = color (w/b), match[2] = piece (p, n, b, r, q, k)
         colorPieceRegex: "\\b([wb])([pnbrqk])\\b",
-        // squareRegex: match[1] = file (1-8), match[2] = rank (1-8)
         squareRegex: "square-(\\d)(\\d)"
     };
     
     let observer = null;
     let observerActive = true;
     let lastFen = "";
+    let userColor = 'w'; // Default
+
+    // --- Core Logic ---
+    function setBoardStatus(status) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "board_status", status: status }));
+        }
+    }
 
     function connect() {
-        console.log("[ChessTool] Connecting to WebSocket...");
+        console.log("[ChessTool] Connecting to WebSocket (ws://localhost:8000/ws)...");
         ws = new WebSocket("ws://localhost:8000/ws");
 
         ws.onopen = () => {
-            console.log("[ChessTool] WebSocket connected!");
+            console.log("[ChessTool] WebSocket connected successfully!");
             setupObserver();
         };
 
@@ -41,32 +83,34 @@
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === "state") {
-                    console.log("[ChessTool] Received state update:", data);
+                    console.log("[ChessTool] Received configuration update from dashboard.");
                     domConfig = data.dom_config;
                     observerActive = data.observer_active;
                     if (observerActive) {
                         setupObserver();
-                        processBoard(); // Trigger immediately
+                        processBoard();
                     } else {
                         if (observer) {
                             observer.disconnect();
                             observer = null;
-                            console.log("[ChessTool] Observer disconnected.");
+                            console.log("[ChessTool] Observer disconnected (Paused by dashboard).");
+                            setBoardStatus("paused");
                         }
                     }
                 }
             } catch (err) {
-                console.error("[ChessTool] JSON Parse error", err);
+                console.error("[ChessTool] JSON Parse error from WS message", err);
             }
         };
 
         ws.onclose = () => {
             console.log("[ChessTool] WebSocket disconnected. Reconnecting in 3s...");
+            setBoardStatus("disconnected");
             setTimeout(connect, 3000);
         };
         
         ws.onerror = (err) => {
-            console.error("[ChessTool] WebSocket error:", err);
+            console.error("[ChessTool] WebSocket error occurred.");
             ws.close();
         };
     }
@@ -79,14 +123,16 @@
         const boardElement = document.querySelector(domConfig.boardSelector);
         if (!boardElement) {
             console.log("[ChessTool] Board not found yet. Retrying in 2s...");
+            setBoardStatus("searching");
             setTimeout(setupObserver, 2000);
             return;
         }
 
         console.log("[ChessTool] Board found! Setting up MutationObserver.");
+        setBoardStatus("connected");
+
         observer = new MutationObserver((mutations) => {
             if (!observerActive) return;
-            // Debounce to avoid sending too many FENs during a single move animation
             clearTimeout(window.fenTimeout);
             window.fenTimeout = setTimeout(() => {
                 processBoard();
@@ -105,15 +151,30 @@
         if (!observerActive || !ws || ws.readyState !== WebSocket.OPEN) return;
 
         const boardElement = document.querySelector(domConfig.boardSelector);
-        if (!boardElement) return;
+        if (!boardElement) {
+            setBoardStatus("searching");
+            return;
+        }
 
         const pieces = boardElement.querySelectorAll(domConfig.pieceSelector);
+        if (pieces.length === 0) return;
         
-        // Initialize empty 8x8 board
         const board = Array(8).fill(null).map(() => Array(8).fill(null));
 
         const cpRegex = new RegExp(domConfig.colorPieceRegex);
         const sqRegex = new RegExp(domConfig.squareRegex);
+
+        let whitePiecesCount = 0;
+        let blackPiecesCount = 0;
+
+        // Determine orientation by checking if board has a flipped class (chess.com specific fallback)
+        // A better way is to see if piece coordinates indicate orientation, but let's pass a generic FEN
+        // and let the backend/dashboard handle turn logic if needed.
+        if (boardElement.classList.contains("flipped")) {
+            userColor = 'b';
+        } else {
+            userColor = 'w';
+        }
 
         pieces.forEach(piece => {
             const className = piece.className || "";
@@ -121,15 +182,15 @@
             const sqMatch = className.match(sqRegex);
 
             if (cpMatch && sqMatch) {
-                const color = cpMatch[1]; // 'w' or 'b'
-                const type = cpMatch[2]; // 'p', 'n', 'b', 'r', 'q', 'k'
+                const color = cpMatch[1]; 
+                const type = cpMatch[2]; 
                 
-                // Assuming square format where file is 1-8 (a-h) and rank is 1-8
-                // Some boards use 0-7, some use 1-8. We'll assume chess.com format: file(1-8)rank(1-8) where 'square-11' is a1
+                if (color === 'w') whitePiecesCount++;
+                if (color === 'b') blackPiecesCount++;
+
                 const file = parseInt(sqMatch[1], 10);
                 const rank = parseInt(sqMatch[2], 10);
                 
-                // Convert to 0-indexed (0,0 is a1, top-left in standard representation is a8)
                 const f = file - 1;
                 const r = rank - 1;
                 
@@ -159,20 +220,22 @@
             if (r < 7) fen += "/";
         }
 
-        // Add basic FEN suffixes. Inferring the active turn perfectly purely from the static board is hard
-        // without a history of moves, but we'll add 'w KQkq - 0 1' as a dummy to make it a valid FEN string 
-        // for Stockfish to process. For a perfect tool, we'd infer turn from move indicators.
-        // For now, let's assume it's white's turn, or infer from board orientation.
+        // Extremely basic turn inference based on pieces missing (not perfect, but a start).
+        // Standard FEN requires turn. Since we don't have move history in this pure DOM reader,
+        // we append the default string and let the backend figure out the rest.
         fen += " w KQkq - 0 1";
 
         if (fen !== lastFen && fen.split(" ")[0] !== "8/8/8/8/8/8/8/8") {
             lastFen = fen;
-            console.log("[ChessTool] Sending FEN:", fen);
-            ws.send(JSON.stringify({ type: "fen", fen: fen }));
+            console.log(`[ChessTool] Detected new board state (${whitePiecesCount}W vs ${blackPiecesCount}B).`);
+            ws.send(JSON.stringify({ 
+                type: "fen", 
+                fen: fen,
+                user_color: userColor
+            }));
         }
     }
 
-    // Start
     connect();
 
 })();

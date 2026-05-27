@@ -2,23 +2,43 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, Play, Pause, Activity, Monitor } from "lucide-react";
+import { Settings, Activity, Monitor, Terminal, Radio, User } from "lucide-react";
+
+type LogEntry = {
+  timestamp: string;
+  level: string;
+  message: string;
+};
 
 export default function Dashboard() {
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  
+  // App State
   const [bestMove, setBestMove] = useState<string | null>(null);
+  const [activeColor, setActiveColor] = useState<string>("w");
+  const [userColor, setUserColor] = useState<string>("w");
+  const [boardStatus, setBoardStatus] = useState<string>("disconnected");
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   
   // Settings State
   const [depth, setDepth] = useState(15);
   const [observerActive, setObserverActive] = useState(true);
   const [domConfig, setDomConfig] = useState({
-    boardSelector: "chess-board",
+    boardSelector: "wc-chess-board",
     pieceSelector: ".piece",
     colorPieceRegex: "\\b([wb])([pnbrqk])\\b",
     squareRegex: "square-(\\d)(\\d)"
   });
 
-  const [isConnected, setIsConnected] = useState(false);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Auto-scroll logs
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs]);
 
   useEffect(() => {
     const connect = () => {
@@ -28,18 +48,30 @@ export default function Dashboard() {
       
       socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
+        
         if (data.type === "state") {
           setDepth(data.depth);
           setObserverActive(data.observer_active);
           setDomConfig(data.dom_config);
         } else if (data.type === "best_move") {
           setBestMove(data.move);
+          if (data.active_color) setActiveColor(data.active_color);
+          if (data.user_color) setUserColor(data.user_color);
+        } else if (data.type === "log") {
+          setLogs(prev => [...prev, {
+            timestamp: new Date().toLocaleTimeString(),
+            level: data.level,
+            message: data.message
+          }].slice(-50)); // Keep last 50 logs
+        } else if (data.type === "board_status") {
+          setBoardStatus(data.status);
         }
       };
 
       socket.onclose = () => {
         setIsConnected(false);
-        setTimeout(connect, 3000); // Reconnect logic
+        setBoardStatus("disconnected");
+        setTimeout(connect, 3000);
       };
 
       setWs(socket);
@@ -74,20 +106,36 @@ export default function Dashboard() {
   const handleDomConfigChange = (e: React.ChangeEvent<HTMLInputElement>, key: string) => {
     const newConfig = { ...domConfig, [key]: e.target.value };
     setDomConfig(newConfig);
-    // Debounce this in a real app, but for local it's fine or we can use onBlur
   };
 
   const saveDomConfig = () => {
     sendSettingsUpdate({ dom_config: domConfig });
   };
 
+  // UI Helpers
+  const getBoardStatusConfig = () => {
+    switch (boardStatus) {
+      case "connected": return { color: "text-emerald-400", bg: "bg-emerald-500", text: "Board Detected & Observing" };
+      case "searching": return { color: "text-amber-400", bg: "bg-amber-500", text: "Searching for Board..." };
+      case "paused": return { color: "text-neutral-400", bg: "bg-neutral-500", text: "Observer Paused" };
+      default: return { color: "text-rose-400", bg: "bg-rose-500", text: "Disconnected" };
+    }
+  };
+  const statusConfig = getBoardStatusConfig();
+
+  const isPlayerTurn = userColor === activeColor;
+  const moveColorTheme = activeColor === 'w' 
+    ? 'from-white via-neutral-200 to-neutral-400' 
+    : 'from-neutral-400 via-neutral-600 to-neutral-800 text-transparent bg-clip-text';
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-indigo-500/30">
       <div className="max-w-6xl mx-auto p-6 lg:p-12">
+        
         {/* Header */}
-        <header className="flex items-center justify-between mb-12">
+        <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-12">
           <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-xl bg-gradient-to-br ${isConnected ? 'from-emerald-500/20 to-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'from-rose-500/20 to-rose-500/10 text-rose-400 border-rose-500/20'} border`}>
+            <div className={`p-2 rounded-xl bg-gradient-to-br ${isConnected ? 'from-indigo-500/20 to-indigo-500/10 text-indigo-400 border-indigo-500/20' : 'from-rose-500/20 to-rose-500/10 text-rose-400 border-rose-500/20'} border`}>
               <Activity className="w-6 h-6" />
             </div>
             <div>
@@ -95,36 +143,65 @@ export default function Dashboard() {
                 Nexus Engine
               </h1>
               <p className="text-sm text-neutral-500 flex items-center gap-2">
-                <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
-                {isConnected ? 'Engine Connected' : 'Waiting for connection...'}
+                <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-indigo-500 animate-pulse' : 'bg-rose-500'}`} />
+                {isConnected ? 'Backend Link Active' : 'Connecting to Backend...'}
               </p>
             </div>
+          </div>
+
+          {/* Board Status Badge */}
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-full border border-white/5 bg-white/[0.02] ${statusConfig.color}`}>
+            <Radio className="w-4 h-4" />
+            <span className="text-sm font-medium">{statusConfig.text}</span>
+            <span className={`w-2 h-2 rounded-full ${statusConfig.bg} ${boardStatus === 'searching' ? 'animate-ping' : ''} ml-1`} />
           </div>
         </header>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           
-          {/* Main Move Display */}
-          <div className="lg:col-span-7 space-y-8">
-            <div className="relative group rounded-3xl bg-white/[0.02] border border-white/10 p-8 overflow-hidden backdrop-blur-xl">
-              <div className="absolute inset-0 bg-gradient-to-br from-indigo-500/5 via-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+          {/* Main Content Area */}
+          <div className="lg:col-span-7 space-y-8 flex flex-col">
+            
+            {/* Optimal Sequence Display */}
+            <div className="relative group rounded-3xl bg-white/[0.02] border border-white/10 p-8 overflow-hidden backdrop-blur-xl flex-grow">
+              <div className={`absolute inset-0 bg-gradient-to-br ${activeColor === 'w' ? 'from-white/5 via-white/2' : 'from-black/10 via-black/5'} to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500`} />
               
-              <h2 className="text-sm font-medium text-neutral-400 tracking-widest uppercase mb-8">
-                Optimal Sequence
-              </h2>
+              <div className="flex justify-between items-start mb-8">
+                <h2 className="text-sm font-medium text-neutral-400 tracking-widest uppercase flex items-center gap-2">
+                  Optimal Sequence
+                </h2>
+                
+                {bestMove && (
+                  <div className="flex items-center gap-2 text-sm font-medium bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
+                    <User className="w-4 h-4 text-neutral-400" />
+                    <span className="text-neutral-400">You are playing:</span>
+                    <span className={userColor === 'w' ? 'text-white font-bold' : 'text-neutral-500 font-bold'}>
+                      {userColor === 'w' ? 'White' : 'Black'}
+                    </span>
+                  </div>
+                )}
+              </div>
               
-              <div className="flex items-center justify-center min-h-[300px]">
+              <div className="flex flex-col items-center justify-center min-h-[250px] relative z-10">
                 <AnimatePresence mode="wait">
                   {bestMove ? (
                     <motion.div
-                      key={bestMove}
+                      key={bestMove + activeColor}
                       initial={{ opacity: 0, y: 20, scale: 0.95 }}
                       animate={{ opacity: 1, y: 0, scale: 1 }}
                       exit={{ opacity: 0, y: -20, scale: 1.05 }}
                       transition={{ duration: 0.4, type: "spring", bounce: 0.4 }}
-                      className="text-8xl md:text-9xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/20 drop-shadow-2xl"
+                      className="flex flex-col items-center"
                     >
-                      {bestMove}
+                      <div className={`text-sm font-semibold tracking-widest uppercase mb-4 ${isPlayerTurn ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {isPlayerTurn ? 'Your Turn to Play' : "Opponent's Turn"}
+                      </div>
+                      <div className={`text-8xl md:text-9xl font-black tracking-tighter bg-clip-text ${moveColorTheme} drop-shadow-2xl`}>
+                        {bestMove}
+                      </div>
+                      <div className="mt-6 text-neutral-500 font-medium">
+                        {activeColor === 'w' ? 'White' : 'Black'} to move
+                      </div>
                     </motion.div>
                   ) : (
                     <motion.div
@@ -133,12 +210,34 @@ export default function Dashboard() {
                       className="flex flex-col items-center gap-4 text-neutral-600"
                     >
                       <Monitor className="w-16 h-16 opacity-20" />
-                      <p className="text-lg font-medium">Awaiting Position Data</p>
+                      <p className="text-lg font-medium">Awaiting Board Data...</p>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
             </div>
+
+            {/* Remote Console */}
+            <div className="rounded-3xl bg-[#0a0a0a] border border-white/10 p-6 flex flex-col h-[300px]">
+              <div className="flex items-center gap-2 mb-4 text-neutral-400 border-b border-white/5 pb-4">
+                <Terminal className="w-5 h-5" />
+                <h3 className="text-sm font-semibold tracking-wider uppercase">Userscript Console</h3>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2 font-mono text-xs p-2 rounded-xl bg-black/50 border border-white/5">
+                {logs.length === 0 ? (
+                  <div className="text-neutral-600 italic">No logs yet. Waiting for userscript...</div>
+                ) : (
+                  logs.map((log, i) => (
+                    <div key={i} className={`break-words ${log.level === 'error' ? 'text-rose-400' : 'text-emerald-300/80'}`}>
+                      <span className="text-neutral-600 mr-2">[{log.timestamp}]</span>
+                      {log.message}
+                    </div>
+                  ))
+                )}
+                <div ref={logsEndRef} />
+              </div>
+            </div>
+            
           </div>
 
           {/* Settings Panel */}
