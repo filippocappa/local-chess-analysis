@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Settings, Activity, Monitor, Terminal, Radio, User, Cpu } from "lucide-react";
+import { Settings, Activity, Monitor, Terminal, Radio, User, Cpu, RefreshCw } from "lucide-react";
 
 type LogEntry = {
   timestamp: string;
@@ -130,6 +130,12 @@ export default function Dashboard() {
     sendSettingsUpdate({ observer_active: newState });
   };
 
+  const toggleTurn = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "toggle_turn" }));
+    }
+  };
+
   const handleDomConfigChange = (e: React.ChangeEvent<HTMLInputElement>, key: string) => {
     const newConfig = { ...domConfig, [key]: e.target.value };
     setDomConfig(newConfig);
@@ -222,15 +228,28 @@ export default function Dashboard() {
                   Optimal Sequence
                 </h2>
                 
-                {bestMove && (
-                  <div className="flex items-center gap-2 text-sm font-medium bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
-                    <User className="w-4 h-4 text-neutral-400" />
-                    <span className="text-neutral-400">You are playing:</span>
-                    <span className={userColor === 'w' ? 'text-white font-bold' : 'text-neutral-500 font-bold'}>
-                      {userColor === 'w' ? 'White' : 'Black'}
-                    </span>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  {boardStatus === "connected" && (
+                    <button
+                      onClick={toggleTurn}
+                      className="flex items-center gap-1.5 text-xs font-semibold bg-indigo-500/10 hover:bg-indigo-500/25 border border-indigo-500/20 text-indigo-300 px-3 py-1.5 rounded-lg transition-colors focus:outline-none cursor-pointer"
+                      title="Manually switch active turn if desynchronized"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      Toggle Turn
+                    </button>
+                  )}
+                  
+                  {bestMove && (
+                    <div className="flex items-center gap-2 text-sm font-medium bg-white/5 px-3 py-1.5 rounded-lg border border-white/5">
+                      <User className="w-4 h-4 text-neutral-400" />
+                      <span className="text-neutral-400">You:</span>
+                      <span className={userColor === 'w' ? 'text-white font-bold' : 'text-neutral-300 font-bold'}>
+                        {userColor === 'w' ? 'White' : 'Black'}
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
               
               <div className="flex flex-col items-center justify-center min-h-[200px] relative z-10">

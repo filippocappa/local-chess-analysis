@@ -183,10 +183,11 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except WebSocketDisconnect:
+            except Exception as e:
+                logger.warning(f"Error broadcasting message to client: {e}")
                 self.disconnect(connection)
 
     async def send_state(self, websocket: WebSocket):
@@ -256,6 +257,9 @@ class ConnectionManager:
                 self.board_status = data.get("status", "disconnected")
                 await self.broadcast(message)
 
+            elif msg_type == "toggle_turn":
+                await self.broadcast(message)
+
             elif msg_type == "fen":
                 if not self.observer_active:
                     return
@@ -272,6 +276,8 @@ class ConnectionManager:
                         
                     except ValueError:
                         logger.warning(f"Invalid FEN received: {fen}")
+                    except Exception as e:
+                        logger.error(f"Error processing FEN or running search: {e}", exc_info=True)
 
         except json.JSONDecodeError:
             logger.error("Invalid JSON received")
@@ -288,7 +294,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
         manager.disconnect(websocket)
 
 @app.on_event("shutdown")

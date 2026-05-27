@@ -93,6 +93,10 @@
                             setBoardStatus("paused");
                         }
                     }
+                } else if (data.type === "toggle_turn") {
+                    console.log("[ChessTool] Toggle turn requested by dashboard.");
+                    activeTurn = activeTurn === 'w' ? 'b' : 'w';
+                    processBoard();
                 }
             } catch (err) {
                 console.error("[ChessTool] JSON Parse error from WS message", err);
