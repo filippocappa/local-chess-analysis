@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [boardStatus, setBoardStatus] = useState<string>("disconnected");
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [engineInfo, setEngineInfo] = useState<string[]>([]);
+  const [movesHistory, setMovesHistory] = useState<string[]>([]);
   
   // Settings State
   const [depth, setDepth] = useState(15);
@@ -78,6 +79,7 @@ export default function Dashboard() {
           if (data.overlay_enabled !== undefined) setOverlayEnabled(data.overlay_enabled);
           setDomConfig(data.dom_config);
           if (data.board_status) setBoardStatus(data.board_status);
+          if (data.moves_history) setMovesHistory(data.moves_history);
         } else if (data.type === "best_move") {
           setBestMove(data.move);
           if (data.active_color) setActiveColor(data.active_color);
@@ -88,6 +90,8 @@ export default function Dashboard() {
           if (data.user_color) setUserColor(data.user_color);
           // Clear engine info when we get a final move
           // setEngineInfo([]); 
+        } else if (data.type === "move_history") {
+          setMovesHistory(data.moves);
         } else if (data.type === "engine_info") {
           setEngineInfo(prev => [...prev, data.info].slice(-20)); // Keep last 20 depth lines
         } else if (data.type === "log") {
@@ -198,6 +202,69 @@ export default function Dashboard() {
     return formatted || info;
   };
 
+  const getLatestEvaluation = () => {
+    for (let i = engineInfo.length - 1; i >= 0; i--) {
+      const info = engineInfo[i];
+      if (info.includes("score")) {
+        const cpMatch = info.match(/score cp (-?\d+)/);
+        const mateMatch = info.match(/score mate (-?\d+)/);
+        if (cpMatch) {
+          const cp = parseInt(cpMatch[1]);
+          const absoluteCp = activeColor === 'w' ? cp : -cp;
+          const winChanceWhite = Math.round(100 / (1 + Math.exp(-0.00368 * absoluteCp)));
+          return {
+            winChanceWhite,
+            winChanceBlack: 100 - winChanceWhite,
+            score: (absoluteCp / 100).toFixed(2),
+            isMate: false,
+            mateVal: null
+          };
+        }
+        if (mateMatch) {
+          const mateVal = parseInt(mateMatch[1]);
+          const absoluteMate = activeColor === 'w' ? mateVal : -mateVal;
+          const winChanceWhite = absoluteMate > 0 ? 100 : 0;
+          return {
+            winChanceWhite,
+            winChanceBlack: 100 - winChanceWhite,
+            score: `M${Math.abs(mateVal)}`,
+            isMate: true,
+            mateVal: absoluteMate
+          };
+        }
+      }
+    }
+    return null;
+  };
+  const evalData = getLatestEvaluation();
+
+  const renderMovePairs = () => {
+    const pairs = [];
+    for (let i = 0; i < movesHistory.length; i += 2) {
+      pairs.push({
+        num: Math.floor(i / 2) + 1,
+        white: movesHistory[i],
+        black: movesHistory[i + 1] || "..."
+      });
+    }
+    
+    if (pairs.length === 0) {
+      return <div className="text-neutral-600 italic text-xs text-center py-4">No moves recorded yet.</div>;
+    }
+
+    return (
+      <div className="grid grid-cols-3 gap-y-2 text-sm font-mono max-h-[150px] overflow-y-auto pr-1">
+        {pairs.map((pair, index) => (
+          <React.Fragment key={index}>
+            <span className="text-neutral-600 font-semibold">{pair.num}.</span>
+            <span className="text-neutral-200 font-medium">{pair.white}</span>
+            <span className="text-neutral-400 font-medium">{pair.black}</span>
+          </React.Fragment>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 font-sans selection:bg-indigo-500/30">
       <div className="max-w-7xl mx-auto p-4 lg:p-8">
@@ -297,6 +364,33 @@ export default function Dashboard() {
                   )}
                 </AnimatePresence>
               </div>
+
+              {/* Win Probability Bar */}
+              {evalData && (
+                <div className="mt-6 pt-6 border-t border-white/5 w-full flex flex-col items-center">
+                  <div className="flex justify-between items-center text-xs font-semibold text-neutral-400 mb-2.5 w-full max-w-md">
+                    <span className={userColor === 'w' ? 'text-indigo-400 font-bold' : 'text-neutral-400'}>
+                      White: {evalData.winChanceWhite}%
+                    </span>
+                    <span className="bg-white/5 border border-white/10 px-2.5 py-0.5 rounded-full text-[10px] text-neutral-300 font-mono">
+                      Eval: {evalData.score}
+                    </span>
+                    <span className={userColor === 'b' ? 'text-indigo-400 font-bold' : 'text-neutral-400'}>
+                      Black: {evalData.winChanceBlack}%
+                    </span>
+                  </div>
+                  <div className="h-2.5 w-full max-w-md bg-neutral-900 rounded-full overflow-hidden flex border border-white/5 p-0.5">
+                    <div 
+                      style={{ width: `${evalData.winChanceWhite}%` }} 
+                      className="h-full bg-white rounded-l-full transition-all duration-500 ease-out" 
+                    />
+                    <div 
+                      style={{ width: `${evalData.winChanceBlack}%` }} 
+                      className="h-full bg-neutral-700 rounded-r-full transition-all duration-500 ease-out" 
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Live Stockfish Analysis */}
@@ -342,6 +436,13 @@ export default function Dashboard() {
 
           {/* Settings Panel */}
           <div className="lg:col-span-5 space-y-6">
+            
+            {/* Move History */}
+            <div className="rounded-3xl bg-white/[0.02] border border-white/10 p-6 backdrop-blur-xl">
+              <h3 className="text-lg font-semibold text-white/90 mb-4">Move History</h3>
+              {renderMovePairs()}
+            </div>
+
             <div className="rounded-3xl bg-white/[0.02] border border-white/10 p-6 backdrop-blur-xl">
               <div className="flex items-center justify-between mb-6">
                 <div className="flex items-center gap-3">

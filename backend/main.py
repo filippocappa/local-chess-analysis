@@ -168,6 +168,8 @@ class ConnectionManager:
             "colorPieceRegex": "\\b([wb])([pnbrqk])\\b",
             "squareRegex": "square-(\\d)(\\d)"
         }
+        self.moves_history = []
+        self.last_fen = None
         
         self.engine = AsyncEngineManager(STOCKFISH_PATH, self)
 
@@ -201,7 +203,8 @@ class ConnectionManager:
             "observer_active": self.observer_active,
             "overlay_enabled": self.overlay_enabled,
             "dom_config": self.dom_config,
-            "board_status": self.board_status
+            "board_status": self.board_status,
+            "moves_history": self.moves_history
         })
         await websocket.send_text(state_msg)
 
@@ -276,6 +279,36 @@ class ConnectionManager:
                         board = chess.Board(fen)
                         active_color = "w" if board.turn else "b"
                         
+                        # Reset history if starting position is detected
+                        if board.board_fen() == chess.Board().board_fen():
+                            self.moves_history = []
+                            await self.broadcast(json.dumps({
+                                "type": "move_history",
+                                "moves": self.moves_history
+                            }))
+
+                        # Detect move made
+                        move_san = None
+                        if self.last_fen:
+                            try:
+                                prev_board = chess.Board(self.last_fen)
+                                for move in prev_board.legal_moves:
+                                    temp_board = prev_board.copy()
+                                    temp_board.push(move)
+                                    if temp_board.board_fen() == board.board_fen():
+                                        move_san = prev_board.san(move)
+                                        break
+                            except Exception:
+                                pass
+                        
+                        self.last_fen = fen
+                        if move_san:
+                            self.moves_history.append(move_san)
+                            await self.broadcast(json.dumps({
+                                "type": "move_history",
+                                "moves": self.moves_history
+                            }))
+
                         # Clear old best move on all dashboards instantly
                         await self.broadcast(json.dumps({
                             "type": "clear_best_move",

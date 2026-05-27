@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Local Chess Analysis Tool (Nexus Engine)
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  Passively observes the chess board, tracks turn via memory, and pipes data to the local WebSocket
 // @match        *://chess.com/*
 // @match        *://*.chess.com/*
@@ -71,7 +71,7 @@
         remoteLog('error', ...args);
     };
 
-    console.log("[ChessTool] Script injected. V4 initialized with Board Overlay support.");
+    console.log("[ChessTool] Script injected. V5 initialized with Board Overlay dimensions.");
 
     // --- State ---
     let domConfig = {
@@ -83,6 +83,7 @@
     
     let observer = null;
     let observerActive = true;
+    let overlayEnabled = true;
     let lastFen = "";
     let userColor = 'w';
     let activeTurn = 'w'; // Always assume White starts
@@ -117,6 +118,13 @@
                     console.log("[ChessTool] Received configuration update from dashboard.");
                     domConfig = data.dom_config;
                     observerActive = data.observer_active;
+                    overlayEnabled = data.overlay_enabled !== undefined ? data.overlay_enabled : true;
+                    
+                    // Clear overlays immediately if disabled
+                    if (!overlayEnabled) {
+                        applyHighlights(null);
+                    }
+
                     if (observerActive) {
                         setupObserver();
                         processBoard();
@@ -215,6 +223,24 @@
         return `${file}${rank}`;
     }
 
+    function positionSquare(el, squareStr, isFlipped) {
+        if (!el || !squareStr || squareStr.length < 2) return;
+        const file = parseInt(squareStr.charAt(0), 10);
+        const rank = parseInt(squareStr.charAt(1), 10);
+        
+        let leftPercent, topPercent;
+        if (isFlipped) {
+            leftPercent = (8 - file) * 12.5;
+            topPercent = (rank - 1) * 12.5;
+        } else {
+            leftPercent = (file - 1) * 12.5;
+            topPercent = (8 - rank) * 12.5;
+        }
+        
+        el.style.left = `${leftPercent}%`;
+        el.style.top = `${topPercent}%`;
+    }
+
     function applyHighlights(bestMove) {
         // Remove existing highlights
         if (highlightFromEl) {
@@ -226,6 +252,7 @@
             highlightToEl = null;
         }
 
+        if (!overlayEnabled) return;
         if (!bestMove || bestMove.length < 4) return;
 
         const boardElement = document.querySelector(domConfig.boardSelector);
@@ -236,12 +263,16 @@
 
         if (!fromSq || !toSq) return;
 
+        const isFlipped = boardElement.classList.contains("flipped");
+
         // Create overlay divs
         highlightFromEl = document.createElement("div");
-        highlightFromEl.className = `highlight nexus-highlight nexus-highlight-from square-${fromSq}`;
+        highlightFromEl.className = "highlight nexus-highlight nexus-highlight-from";
+        positionSquare(highlightFromEl, fromSq, isFlipped);
 
         highlightToEl = document.createElement("div");
-        highlightToEl.className = `highlight nexus-highlight nexus-highlight-to square-${toSq}`;
+        highlightToEl.className = "highlight nexus-highlight nexus-highlight-to";
+        positionSquare(highlightToEl, toSq, isFlipped);
 
         boardElement.appendChild(highlightFromEl);
         boardElement.appendChild(highlightToEl);
