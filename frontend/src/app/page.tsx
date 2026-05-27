@@ -36,15 +36,27 @@ export default function Dashboard() {
     squareRegex: "square-(\\d)(\\d)"
   });
 
-  const logsEndRef = useRef<HTMLDivElement>(null);
-  const infoEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
+  const infoContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (logsEndRef.current) logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    const container = logsContainerRef.current;
+    if (container) {
+      const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+      if (isAtBottom || logs.length <= 1) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
   }, [logs]);
 
   useEffect(() => {
-    if (infoEndRef.current) infoEndRef.current.scrollIntoView({ behavior: "smooth" });
+    const container = infoContainerRef.current;
+    if (container) {
+      const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 100;
+      if (isAtBottom || engineInfo.length <= 1) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
   }, [engineInfo]);
 
   useEffect(() => {
@@ -140,8 +152,8 @@ export default function Dashboard() {
 
   const isPlayerTurn = userColor === activeColor;
   const moveColorTheme = activeColor === 'w' 
-    ? 'from-white via-neutral-200 to-neutral-400' 
-    : 'from-neutral-400 via-neutral-600 to-neutral-800 text-transparent bg-clip-text';
+    ? 'bg-gradient-to-r from-white via-neutral-200 to-neutral-400 text-transparent' 
+    : 'bg-gradient-to-r from-neutral-200 via-neutral-350 to-neutral-500 text-transparent';
 
   // Parse engine info to make it readable
   const formatEngineInfo = (info: string) => {
@@ -262,7 +274,7 @@ export default function Dashboard() {
                 <Cpu className="w-5 h-5 text-indigo-400" />
                 <h3 className="text-sm font-semibold tracking-wider uppercase">Live Engine Thinking</h3>
               </div>
-              <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5 text-indigo-200/80">
+              <div ref={infoContainerRef} className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5 text-indigo-200/80">
                 {engineInfo.length === 0 ? (
                   <div className="text-neutral-600 italic">Engine idle...</div>
                 ) : (
@@ -272,7 +284,6 @@ export default function Dashboard() {
                     </div>
                   ))
                 )}
-                <div ref={infoEndRef} />
               </div>
             </div>
 
@@ -282,7 +293,7 @@ export default function Dashboard() {
                 <Terminal className="w-5 h-5" />
                 <h3 className="text-sm font-semibold tracking-wider uppercase">Userscript Logs</h3>
               </div>
-              <div className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5">
+              <div ref={logsContainerRef} className="flex-1 overflow-y-auto space-y-1.5 font-mono text-xs p-3 rounded-xl bg-black/50 border border-white/5">
                 {logs.length === 0 ? (
                   <div className="text-neutral-600 italic">No logs yet. Waiting for userscript...</div>
                 ) : (
@@ -293,7 +304,6 @@ export default function Dashboard() {
                     </div>
                   ))
                 )}
-                <div ref={logsEndRef} />
               </div>
             </div>
             
@@ -395,7 +405,21 @@ export default function Dashboard() {
 
             {/* DOM Configuration */}
             <div className="rounded-3xl bg-white/[0.02] border border-white/10 p-6 backdrop-blur-xl">
-              <h3 className="text-lg font-semibold text-white/90 mb-6">DOM Extraction Settings</h3>
+              <h3 className="text-lg font-semibold text-white/90 mb-2">DOM Extraction Settings</h3>
+              
+              <div className="text-xs text-neutral-400 leading-relaxed bg-white/[0.01] border border-white/5 rounded-2xl p-4 mb-6 space-y-2">
+                <p className="font-semibold text-neutral-300">What are these settings?</p>
+                <p>
+                  They instruct the Tampermonkey userscript how to scrape the chess board state from the page's HTML, allowing it to adapt dynamically:
+                </p>
+                <ul className="list-disc pl-4 space-y-1.5 text-neutral-500">
+                  <li><strong className="text-neutral-400">Board Selector</strong>: HTML tag or class name of the board container (e.g., <code className="text-indigo-400 font-mono text-[10px]">wc-chess-board</code> for Chess.com, <code className="text-indigo-400 font-mono text-[10px]">cg-board</code> for Lichess).</li>
+                  <li><strong className="text-neutral-400">Piece Selector</strong>: The CSS selector targeting active pieces on the board (e.g., <code className="text-indigo-400 font-mono text-[10px]">.piece</code>).</li>
+                  <li><strong className="text-neutral-400">Color & Piece Regex</strong>: Pattern to extract piece color (<code className="text-indigo-400 font-mono text-[10px]">w/b</code>) and type (<code className="text-indigo-400 font-mono text-[10px]">p, r, n, b, q, k</code>) from its class names.</li>
+                  <li><strong className="text-neutral-400">Square Regex</strong>: Pattern to extract coordinates (e.g., <code className="text-indigo-400 font-mono text-[10px]">square-52</code> for column 5, row 2) to construct the game state.</li>
+                </ul>
+              </div>
+
               <div className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-neutral-500 mb-1.5 uppercase tracking-wider">Board Selector</label>
