@@ -3,8 +3,10 @@
 // @namespace    http://tampermonkey.net/
 // @version      0.3
 // @description  Passively observes the chess board, tracks turn via memory, and pipes data to the local WebSocket
+// @match        *://chess.com/*
 // @match        *://*.chess.com/*
 // @match        *://lichess.org/*
+// @match        *://*.lichess.org/*
 // @grant        none
 // ==/UserScript==
 
