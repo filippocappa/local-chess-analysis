@@ -170,6 +170,8 @@ class ConnectionManager:
         }
         self.moves_history = []
         self.last_fen = None
+        self.current_board = chess.Board()
+        self.user_color = "w"
         
         self.engine = AsyncEngineManager(STOCKFISH_PATH, self)
 
@@ -266,7 +268,40 @@ class ConnectionManager:
                 await self.broadcast(message)
 
             elif msg_type == "toggle_turn":
-                await self.broadcast(message)
+                # Toggle active turn on authoritative board
+                self.current_board.turn = not self.current_board.turn
+                self.last_fen = self.current_board.fen()
+                active_color = "w" if self.current_board.turn else "b"
+                logger.info(f"Manual turn toggle requested. New active color: {active_color}")
+
+                # Broadcast updated move history state
+                await self.broadcast(json.dumps({
+                    "type": "state",
+                    "depth": self.depth,
+                    "movetime": self.movetime,
+                    "skill_level": self.skill_level,
+                    "elo": self.elo,
+                    "observer_active": self.observer_active,
+                    "dom_config": self.dom_config,
+                    "board_status": self.board_status,
+                    "moves_history": self.moves_history
+                }))
+
+                # Clear old best move on all dashboards instantly with new active color
+                await self.broadcast(json.dumps({
+                    "type": "clear_best_move",
+                    "active_color": active_color,
+                    "user_color": self.user_color
+                }))
+
+                # Send toggle command to userscript to sync its activeTurn state
+                await self.broadcast(json.dumps({
+                    "type": "toggle_turn",
+                    "active_color": active_color
+                }))
+
+                # Trigger new engine search on updated FEN
+                await self.engine.search(self.current_board.fen(), self.depth, self.movetime, active_color, self.user_color)
 
             elif msg_type == "fen":
                 if not self.observer_active:
@@ -274,50 +309,79 @@ class ConnectionManager:
                 
                 fen = data.get("fen")
                 user_color = data.get("user_color", "w")
+                self.user_color = user_color
+
                 if fen:
                     try:
-                        board = chess.Board(fen)
-                        active_color = "w" if board.turn else "b"
+                        incoming_board = chess.Board(fen)
+                        incoming_board_fen = incoming_board.board_fen()
+
+                        # Skip duplicate states to prevent redundant calculations
+                        simplified_incoming = f"{incoming_board_fen} {'w' if incoming_board.turn else 'b'}"
+                        simplified_current = f"{self.current_board.board_fen()} {'w' if self.current_board.turn else 'b'}"
+                        if simplified_incoming == simplified_current:
+                            return
                         
-                        # Reset history if starting position is detected
-                        if board.board_fen() == chess.Board().board_fen():
+                        # 1. Reset history if starting position is detected
+                        if incoming_board_fen == chess.Board().board_fen():
+                            self.current_board = chess.Board()
                             self.moves_history = []
+                            self.last_fen = self.current_board.fen()
+                            
                             await self.broadcast(json.dumps({
                                 "type": "move_history",
                                 "moves": self.moves_history
                             }))
 
-                        # Detect move made
-                        move_san = None
-                        if self.last_fen:
-                            try:
-                                prev_board = chess.Board(self.last_fen)
-                                for move in prev_board.legal_moves:
-                                    temp_board = prev_board.copy()
-                                    temp_board.push(move)
-                                    if temp_board.board_fen() == board.board_fen():
-                                        move_san = prev_board.san(move)
-                                        break
-                            except Exception:
-                                pass
+                            # Clear best move and run search
+                            active_color = "w"
+                            await self.broadcast(json.dumps({
+                                "type": "clear_best_move",
+                                "active_color": active_color,
+                                "user_color": self.user_color
+                            }))
+                            await self.engine.search(self.current_board.fen(), self.depth, self.movetime, active_color, self.user_color)
+                            return
+
+                        # 2. Check if this is a legal move from self.current_board
+                        move_found = False
+                        for move in self.current_board.legal_moves:
+                            temp_board = self.current_board.copy()
+                            temp_board.push(move)
+                            if temp_board.board_fen() == incoming_board_fen:
+                                # Found the move! Push it onto current_board
+                                move_san = self.current_board.san(move)
+                                self.current_board.push(move)
+                                self.moves_history.append(move_san)
+                                move_found = True
+                                logger.info(f"Legal move detected on server: {move_san}. New active color: {'w' if self.current_board.turn else 'b'}")
+                                break
                         
-                        self.last_fen = fen
-                        if move_san:
-                            self.moves_history.append(move_san)
+                        if move_found:
+                            # Broadcast move history
                             await self.broadcast(json.dumps({
                                 "type": "move_history",
                                 "moves": self.moves_history
                             }))
+                        else:
+                            # 3. Game started from middle or desynchronized layout. Re-initialize board.
+                            logger.info("Board discrepancy detected or game started from middle. Syncing board placement and turn.")
+                            self.current_board = incoming_board
+                            # Preserve historical move list or reset it depending on context
+                            # For starting from middle, we can keep the history or leave it as is
+                        
+                        self.last_fen = self.current_board.fen()
+                        active_color = "w" if self.current_board.turn else "b"
 
                         # Clear old best move on all dashboards instantly
                         await self.broadcast(json.dumps({
                             "type": "clear_best_move",
                             "active_color": active_color,
-                            "user_color": user_color
+                            "user_color": self.user_color
                         }))
                         
                         # Trigger async search
-                        await self.engine.search(fen, self.depth, self.movetime, active_color, user_color)
+                        await self.engine.search(self.current_board.fen(), self.depth, self.movetime, active_color, self.user_color)
                         
                     except ValueError:
                         logger.warning(f"Invalid FEN received: {fen}")

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Local Chess Analysis Tool (Nexus Engine)
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6.0
 // @description  Passively observes the chess board, tracks turn via memory, and pipes data to the local WebSocket
 // @match        *://chess.com/*
 // @match        *://*.chess.com/*
@@ -199,7 +199,7 @@
             clearTimeout(window.fenTimeout);
             window.fenTimeout = setTimeout(() => {
                 processBoard();
-            }, 100);
+            }, 250);
         });
 
         // Observe the host boardElement (for class changes like 'flipped')
@@ -237,6 +237,47 @@
             }
         }
         return activeTurn; // Fallback
+    }
+
+    function detectTurnFromDOM() {
+        // --- Chess.com Clocks ---
+        if (document.querySelector('.clock-white.clock-turn') || 
+            document.querySelector('.clock-white.clock-player-turn') ||
+            document.querySelector('.clock-white .clock-time-turn')) {
+            return 'w';
+        }
+        if (document.querySelector('.clock-black.clock-turn') || 
+            document.querySelector('.clock-black.clock-player-turn') ||
+            document.querySelector('.clock-black .clock-time-turn')) {
+            return 'b';
+        }
+
+        // --- Lichess Clocks ---
+        if (document.querySelector('.clock_white.clock_run') || 
+            document.querySelector('.clock_white.active')) {
+            return 'w';
+        }
+        if (document.querySelector('.clock_black.clock_run') || 
+            document.querySelector('.clock_black.active')) {
+            return 'b';
+        }
+
+        // --- Active Player Highlight classes ---
+        const whitePlayer = document.querySelector('.player-component.white.active') || document.querySelector('.player.white.active');
+        const blackPlayer = document.querySelector('.player-component.black.active') || document.querySelector('.player.black.active');
+        if (whitePlayer) return 'w';
+        if (blackPlayer) return 'b';
+
+        return null;
+    }
+
+    function getHighlightContainer(boardElement) {
+        const targetDOM = boardElement.shadowRoot || boardElement;
+        const pieces = targetDOM.querySelectorAll(domConfig.pieceSelector);
+        if (pieces.length > 0) {
+            return pieces[0].parentNode || targetDOM;
+        }
+        return targetDOM;
     }
 
     function algebraicToSquare(alg) {
@@ -284,6 +325,8 @@
         if (!boardElement) return;
 
         const targetDOM = boardElement.shadowRoot || boardElement;
+        const container = getHighlightContainer(boardElement);
+        
         const fromSq = algebraicToSquare(bestMove.substring(0, 2));
         const toSq = algebraicToSquare(bestMove.substring(2, 4));
 
@@ -291,7 +334,7 @@
 
         const isFlipped = boardElement.classList.contains("flipped");
 
-        // Ensure styles are injected in this ShadowRoot / document
+        // Ensure styles are injected in targetDOM (the shadowRoot or host)
         injectStyles(targetDOM);
 
         // Create overlay divs
@@ -303,8 +346,8 @@
         highlightToEl.className = "highlight nexus-highlight nexus-highlight-to";
         positionSquare(highlightToEl, toSq, isFlipped);
 
-        targetDOM.appendChild(highlightFromEl);
-        targetDOM.appendChild(highlightToEl);
+        container.appendChild(highlightFromEl);
+        container.appendChild(highlightToEl);
     }
 
     function processBoard() {
@@ -358,8 +401,13 @@
             }
         });
 
-        // Detect turn before updating previousBoard
-        activeTurn = detectTurn(previousBoard, board);
+        // Detect turn using clocks/DOM indicators first, fall back to board memory differences
+        const domTurn = detectTurnFromDOM();
+        if (domTurn) {
+            activeTurn = domTurn;
+        } else {
+            activeTurn = detectTurn(previousBoard, board);
+        }
         previousBoard = board;
 
         let fen = "";
