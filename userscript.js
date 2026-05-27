@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Local Chess Analysis Tool (Nexus Engine)
 // @namespace    http://tampermonkey.net/
-// @version      0.6.1
+// @version      0.6.2
 // @description  Passively observes the chess board, tracks turn via memory, and pipes data to the local WebSocket
 // @match        *://chess.com/*
 // @match        *://*.chess.com/*
@@ -29,7 +29,7 @@
         const style = doc.createElement('style');
         style.id = 'nexus-overlay-styles';
         style.innerHTML = `
-            .nexus-highlight {
+            .highlight.nexus-highlight {
                 background-color: rgba(99, 102, 241, 0.15) !important;
                 border: 2px dashed rgba(99, 102, 241, 0.85) !important;
                 border-radius: 4px !important;
@@ -40,7 +40,7 @@
                 height: 12.5% !important;
                 z-index: 3999 !important; /* Ensure it stays on top of other board elements */
             }
-            .nexus-highlight-to {
+            .highlight.nexus-highlight-to {
                 border-style: solid !important;
                 background-color: rgba(16, 185, 129, 0.15) !important;
                 border-color: rgba(16, 185, 129, 0.85) !important;

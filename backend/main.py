@@ -43,6 +43,7 @@ class AsyncEngineManager:
         self.connection_manager = connection_manager
         self.search_task: Optional[asyncio.Task] = None
         self.is_searching = False
+        self.ignore_bestmove = False
 
     async def start(self):
         if not self.process:
@@ -114,7 +115,7 @@ class AsyncEngineManager:
                     }))
                 elif line.startswith("bestmove"):
                     parts = line.split()
-                    if len(parts) >= 2:
+                    if len(parts) >= 2 and not self.ignore_bestmove:
                         best_move = parts[1]
                         await self.connection_manager.broadcast(json.dumps({
                             "type": "best_move",
@@ -124,6 +125,7 @@ class AsyncEngineManager:
                             "user_color": user_color
                         }))
                     self.is_searching = False
+                    self.ignore_bestmove = False
                     break
             except asyncio.TimeoutError:
                 continue
@@ -134,10 +136,11 @@ class AsyncEngineManager:
         
         # Stop any ongoing search
         if self.is_searching:
+            self.ignore_bestmove = True
             await self._send_command("stop")
             self.is_searching = False
-            # Wait a tiny bit for it to stop
-            await asyncio.sleep(0.1)
+            # Wait a tiny bit for it to stop and emit the bestmove
+            await asyncio.sleep(0.05)
 
         await self._send_command(f"position fen {fen}")
         
@@ -147,6 +150,7 @@ class AsyncEngineManager:
             await self._send_command(f"go depth {depth}")
             
         self.is_searching = True
+        self.ignore_bestmove = False
         
         # Start background reader task for this search
         if self.search_task:
@@ -290,6 +294,11 @@ class ConnectionManager:
                         "board_status": self.board_status
                     })
                     await self.broadcast(state_msg)
+
+                    # Re-trigger search on current board with new settings if observer is active
+                    if self.observer_active and self.current_board:
+                        active_color = "w" if self.current_board.turn else "b"
+                        await self.engine.search(self.current_board.fen(), self.depth, self.movetime, active_color, self.user_color)
 
             elif msg_type == "log":
                 await self.broadcast(message)
